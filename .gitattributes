@@ -1,0 +1,4 @@
+*.cmd text eol=crlf
+*.mjs text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
