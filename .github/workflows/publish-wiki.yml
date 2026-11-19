@@ -1,12 +1,15 @@
 # Copies the "wiki" folder of this repository to the repository's wiki.
 # It uses the token GitHub gives every workflow run: no secret to create, nothing to configure.
 # The wiki must exist first: open the Wiki tab once and save a first page (any content).
+# Saving a page in the Wiki tab also starts this workflow, so the wiki always matches the "wiki" folder:
+# edit the documentation in that folder, not in the Wiki tab.
 name: Publish wiki
 
 on:
   push:
     branches: [main]
     paths: ["wiki/**", ".github/workflows/publish-wiki.yml"]
+  gollum:
   workflow_dispatch:
 
 permissions:
