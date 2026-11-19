@@ -8,14 +8,14 @@ When Claude Code works in a cloud session, the changes it makes live on a remote
 
 ## What Atelier does
 
-Atelier runs the real site on your computer and receives the cloud session's uncommitted changes directly, through the Claude desktop app. GitHub is not involved until you decide to push.
+Atelier is a Claude plugin. The Claude desktop app starts it on your computer; it runs the real site there and receives the cloud session's uncommitted changes directly. GitHub is not involved until you decide to push.
 
 ```
 Claude Code (cloud session)             Your computer
 ---------------------------             ------------------------------
 edits the site
-packs the changes into one file  --->   Claude desktop app drops the file
-                                        into the Atelier "inbox" folder
+packs the changed files          --->   Claude desktop app drops the file
+into one small file                     into Atelier's inbox folder
                                         Atelier applies it to its copy
                                         of the site
                                         http://localhost:3210 updates
@@ -23,13 +23,15 @@ packs the changes into one file  --->   Claude desktop app drops the file
 
 You click, navigate and test the real site. When you are happy, you tell Claude to push.
 
+There is nothing to launch and nothing to place in your own folders.
+
 ## Pages
 
 | Page | Content |
 | --- | --- |
-| [Getting started](Getting-started) | Requirements, the skill, getting Atelier on your computer, first run |
+| [Getting started](Getting-started) | Requirements, installing the plugin, first run |
 | [Daily use](Daily-use) | The loop: ask, look, push or undo. The badge |
-| [Settings](Settings) | The Atelier folder, `atelier.txt`, options, `.env.local`, `status.json` |
+| [Settings](Settings) | Where Atelier keeps its files, `.env.local`, the port, the `status` tool |
 | [How it works](How-it-works) | The transfer file, what Atelier does with it, supported sites |
 | [Privacy and security](Privacy-and-security) | What Atelier reads, writes and contacts |
 | [Troubleshooting](Troubleshooting) | Common problems and what to check |
@@ -38,8 +40,8 @@ You click, navigate and test the real site. When you are happy, you tell Claude 
 
 Early version.
 
-- Tested: the full chain (pack, apply, live update, repository switch) on Linux with a Next.js 16 site.
-- Tested: dropping the files onto a Windows computer through the Claude desktop app.
-- Not verified yet: the Windows launcher and running the site on Windows, end to end.
+- Tested: the full chain on Linux with a Next.js 16 site and with a static site.
+- Tested: dropping files onto a Windows computer through the Claude desktop app.
+- Not verified yet: the plugin installed in the Claude desktop app on Windows, end to end.
 
-Please open an issue with the console output if something fails.
+Please open an issue if something fails. Remove anything private from what you paste.

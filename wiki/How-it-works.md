@@ -1,35 +1,36 @@
 # How it works
 
-Two sides: a short script in the cloud session, and Atelier on your computer. Between them, one small file carried by the Claude desktop app.
+Three parts: a short script in the cloud session, the Claude desktop app in between, and Atelier on your computer.
 
 ## Cloud side: packing the changes
 
-After each change, Claude runs [`sync.sh`](https://github.com/JulienBoucherDesign/Atelier/blob/main/sync.sh) (the skill carries a copy). The script:
+After each change, Claude runs [`pack.sh`](https://github.com/JulienBoucherDesign/Atelier/blob/main/plugins/atelier/skills/preview/pack.sh). The script:
 
-1. finds the starting point: the latest commit of the session's history that GitHub already knows;
-2. records the full state of the working copy (modified, added and deleted files, local commits) in a temporary index. Ignored files stay ignored;
-3. wraps that state in a commit under a local name, `refs/atelier/wip`, which is never pushed;
-4. writes a git bundle holding only the difference between the starting point and that commit.
+1. records the full state of the working copy (modified, added and deleted files, local commits) in a temporary index. Ignored files stay ignored;
+2. compares it with the state of the previous transfer, which it remembers under a local name, `refs/atelier/sent`, that is never pushed;
+3. writes one compressed file holding the files that changed and the list of files that were removed.
 
-The session's own index and history are left untouched. The file is small: it holds the changes, not the site.
+The first transfer for a site, and any transfer made with `pack.sh full`, holds every file of the site instead.
 
-The file is named `preview@owner@repo.bundle`. The name tells Atelier which repository the changes belong to.
+The session's own index and history are left untouched. The file is named `atelier@owner@repo.tgz`, and a short description inside it says which site it belongs to, which state it produces and which state it starts from.
 
 ## Transport: the Claude desktop app
 
-Claude drops the file into the `inbox` subfolder of the Atelier folder, using the access to that folder you approved. No server, no tunnel and no account are involved, and GitHub does not see the file.
-
-If the desktop app cannot be reached, Claude can send the file in the conversation instead. Saved to your Downloads folder, it is picked up by Atelier just the same.
+Claude drops the file into Atelier's inbox folder on your computer, using the access to that folder you approved. No server, no tunnel and no account are involved, and GitHub does not see the file.
 
 ## Computer side: Atelier
 
-`atelier.mjs` does four things.
+Atelier is two scripts in the plugin.
 
-**Keeps a copy of the site.** On the first transfer for a repository, it clones the repository from GitHub into `data/`, with the Git access already set up on your computer.
+**`mcp.mjs`** is the part the Claude desktop app starts, as a local connector. It starts the preview, restarts it if it stops, and gives Claude the `status` and `stop` tools. While it runs it refreshes a small heartbeat file.
 
-**Applies each transfer.** It watches `inbox`, waits until a file is complete, reads it into its copy of the repository and checks out the result. Only the files that changed are rewritten.
+**`engine.mjs`** is the preview. It:
 
-**Runs the site.**
+- **keeps a copy of the site**, built only from the transfer files it receives;
+- **applies each transfer**: it watches the inbox, waits until a file is complete, checks that it starts from the state it has, writes the changed files and removes the deleted ones. If it does not have the starting state, it says so and Claude sends a full copy;
+- **runs the site**, as shown below;
+- **serves the preview** at `http://localhost:3210` and passes requests to the site. In passing, it adds its badge to HTML pages and keeps the site's own live-reload connection working, which is why the page updates without a reload;
+- **stops by itself** when the heartbeat file is no longer refreshed, that is, when Claude is closed.
 
 | Project | Started with |
 | --- | --- |
@@ -38,8 +39,6 @@ If the desktop app cannot be reached, Claude can send the file in the conversati
 | A folder without a `dev` script | Served as static files, with automatic reload |
 
 Dependencies are installed with pnpm when the project uses it (a matching version is placed in Atelier's own folder), otherwise with npm. If the lockfile changes, they are installed again and the site restarts.
-
-**Serves the preview.** Atelier listens on `http://localhost:3210` and passes requests to the site. In passing, it adds its badge to HTML pages and keeps the site's own live-reload connection working, which is why the page updates without a reload.
 
 ## Why not just push
 

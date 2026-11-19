@@ -1,168 +1,64 @@
 #!/usr/bin/env node
-// Atelier — the real site, live on your computer, while Claude Code edits it in a cloud session.
+// Atelier engine — runs the real site on this computer and applies the changes a Claude Code cloud session sends.
 //
-// This script keeps a copy of the site's GitHub repository, runs it locally, and applies the changes
-// the cloud session drops into the "inbox" subfolder (through the Claude desktop app, not GitHub).
-// The open page updates by itself. Atelier never writes to GitHub.
-//
-// Portable: everything it creates stays in its own folder ("inbox" and "data").
-// Start: double-click Atelier.cmd (Windows), or run "node atelier.mjs".
-// Options: [repo] [--branch name] [--prefix claude/] [--port 3210] [--no-open]
-// No dependencies: Node.js 20 or later, and git.
-import { spawn, execFile } from 'node:child_process';
+// It watches the inbox folder for transfer files (atelier@owner@repo.tgz), unpacks them into its own copy of
+// the site, runs the site's development server and serves it at http://localhost:3210 with a small badge.
+// It contacts no hosting provider and no Git host: the site's files come from the transfer files only.
+// Started and kept alive by mcp.mjs (the part Claude starts); it stops by itself when Claude is closed.
+// No dependencies: Node.js 20 or later.
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { VERSION, dataDir, inboxDir } from './paths.mjs';
 
-const VERSION = '4.0';
 const WIN = process.platform === 'win32';
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DATA = process.env.ATELIER_HOME || path.join(HERE, 'data');
-const INBOX = process.env.ATELIER_INBOX || path.join(HERE, 'inbox');
-const REPO_BASE = process.env.ATELIER_REPO_BASE || 'https://github.com/';
-const SESSION_LABEL = 'cloud session (not pushed)';
-const STARTED = Date.now();
+const DATA = dataDir();
+const INBOX = inboxDir();
+const BASE_PORT = +process.env.ATELIER_PORT || 3210;
+const SUPERVISED = process.env.ATELIER_SUPERVISED === '1';
+const HEARTBEAT = path.join(DATA, 'heartbeat');
+const ENGINE_FILE = path.join(DATA, 'engine.json');
+const LABEL = 'cloud session (not pushed)';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const exists = p => { try { fs.statSync(p); return true; } catch { return false; } };
+const readJSON = p => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
 const log = m => console.log(new Date().toTimeString().slice(0, 8) + '  ' + m);
-function fatal(m) { console.error('\n[ERROR] ' + m + '\n'); stopDev(); process.exit(1); }
-
-// ---------- configuration ----------
-function readKV(file) {
-  const m = {};
-  let txt = '';
-  try { txt = fs.readFileSync(file, 'utf8'); } catch { return m; }
-  for (let l of txt.replace(/^﻿/, '').split(/\r?\n/)) {
-    l = l.trim();
-    if (!l || l.startsWith('#')) continue;
-    const i = l.indexOf('=');
-    if (i > 0 && !l.slice(0, i).includes('/')) m[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
-    else if (!m.repo) m.repo = l;
-  }
-  return m;
-}
-function normalizeRepo(s) {
-  s = (s || '').trim();
-  if (!s) return '';
-  if (/^[\w.-]+\/[\w.-]+$/.test(s)) return 'https://github.com/' + s + '.git';
-  if (s.startsWith('https://github.com/')) {
-    const p = s.replace(/\/+$/, '').replace(/\.git$/, '').slice('https://github.com/'.length).split('/');
-    if (p.length >= 2) return `https://github.com/${p[0]}/${p[1]}.git`;
-  }
-  return s;
-}
-const repoParts = repo => repo.replace(/\\/g, '/').replace(/\/+$/, '').replace(/\.git$/, '').split('/').slice(-2);
-const repoSlug = repo => repoParts(repo).join('-').replace(/[^A-Za-z0-9._-]+/g, '-');
-const repoLabel = repo => repoParts(repo).join('/');
-const savedRepo = () => readKV(path.join(DATA, 'config.txt')).repo || '';
-function saveRepo(repo) { fs.mkdirSync(DATA, { recursive: true }); fs.writeFileSync(path.join(DATA, 'config.txt'), 'repo=' + repo + '\n'); }
-
-const cfg = { repo: '', pinned: false, branch: '', prefix: 'claude/', port: 3210, open: true };
-{
-  const kv = readKV(path.join(HERE, 'atelier.txt'));
-  if (kv.repo) cfg.repo = kv.repo;
-  if (kv.branch) cfg.branch = kv.branch;
-  if (kv.prefix) cfg.prefix = kv.prefix;
-  if (+kv.port > 0) cfg.port = +kv.port;
-  const a = process.argv.slice(2);
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === '--branch') cfg.branch = a[++i] || '';
-    else if (a[i] === '--prefix') cfg.prefix = a[++i] || cfg.prefix;
-    else if (a[i] === '--port') cfg.port = +a[++i] || cfg.port;
-    else if (a[i] === '--no-open') cfg.open = false;
-    else if (a[i] === '--version') { console.log('Atelier ' + VERSION); process.exit(0); }
-    else if (a[i] === '-h' || a[i] === '--help') {
-      console.log(`Atelier ${VERSION} — live preview of the site Claude Code edits in a cloud session.\n\n  node atelier.mjs [repo] [--branch name] [--prefix claude/] [--port 3210] [--no-open]\n\nWithout a repo, Atelier shows the repository of the Claude Code session that sends it changes.`);
-      process.exit(0);
-    } else if (!a[i].startsWith('-')) cfg.repo = a[i];
-  }
-  cfg.pinned = !!cfg.repo;
-  cfg.repo = normalizeRepo(cfg.repo || savedRepo());
-}
 
 // ---------- state ----------
 const S = {
-  dir: '', branch: cfg.branch, auto: !cfg.branch, sha: '', subject: '', status: cfg.repo ? 'clone' : 'waiting', error: '',
-  mode: '', target: '', applied: 0, session: false, notice: '', defBr: 'main', staticRoot: '', port: 0,
-  gen: 0, dev: null, devGen: 0, clients: new Set(), token: crypto.randomBytes(16).toString('hex'),
+  repo: '', slug: '', dir: '', id: '', seen: '', label: '', status: 'waiting', error: '', notice: '', needFull: false,
+  mode: '', target: '', applied: 0, staticRoot: '', port: 0,
+  dev: null, devGen: 0, clients: new Set(), token: crypto.randomBytes(16).toString('hex'),
 };
 const publicState = () => ({
-  repo: cfg.repo ? repoLabel(cfg.repo) : '', branch: S.branch, auto: S.auto, prefix: cfg.prefix, sha: S.sha.slice(0, 7), subject: S.subject,
-  status: S.status, error: S.error, mode: S.mode, applied: S.applied, session: S.session, notice: S.notice,
+  atelier: VERSION, repo: S.repo, showing: S.repo ? LABEL : '', id: S.id, seen: S.seen, label: S.label, status: S.status, error: S.error,
+  notice: S.notice, need_full: S.needFull, mode: S.mode, applied: S.applied, url: 'http://localhost:' + S.port,
 });
 function broadcast(event) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(publicState())}\n\n`;
   for (const c of S.clients) c.write(msg);
 }
 function writeStatus() {
-  const st = publicState();
   try {
     fs.mkdirSync(INBOX, { recursive: true });
-    fs.writeFileSync(path.join(INBOX, 'status.json'), JSON.stringify({
-      url: 'http://localhost:' + S.port, repo: st.repo, status: st.status, error: st.error, showing: st.branch, commit: S.sha,
-      message: st.subject, notice: st.notice, time: new Date().toISOString(), version: VERSION,
-    }, null, 2));
+    fs.writeFileSync(path.join(INBOX, 'status.json'), JSON.stringify({ ...publicState(), time: new Date().toISOString() }, null, 2));
   } catch {}
 }
 function setStatus(status, error = '') {
   S.status = status; S.error = error;
-  broadcast('status');
-  if (status === 'ready' || status === 'error' || status === 'waiting') writeStatus();
+  broadcast('status'); writeStatus();
 }
-function note(msg) { S.notice = msg; writeStatus(); broadcast('status'); }
+function note(msg, needFull = false) { S.notice = msg; S.needFull = needFull; if (msg) log(msg); writeStatus(); broadcast('status'); }
 
-// one job at a time on the site copy (update, install, start)
+// one job at a time on the site copy (unpack, install, start)
 let chain = Promise.resolve();
 const locked = fn => (chain = chain.then(fn, fn).catch(e => { log('Error: ' + (e && e.message || e)); }));
-
-// ---------- git ----------
-let GIT = 'git';
-function findGit() {
-  return new Promise(resolve => {
-    execFile('git', ['--version'], { windowsHide: true }, err => {
-      if (!err) return resolve('git');
-      const cands = WIN ? [process.env.ProgramFiles, process.env.ProgramW6432, process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs')]
-        .filter(Boolean).map(d => path.join(d, 'Git', 'cmd')) : [];
-      const dir = cands.find(exists); // Git for Windows installed but not on the PATH
-      resolve(dir ? path.join(dir, 'git') : '');
-    });
-  });
-}
-function git(dir, ...args) {
-  return new Promise((resolve, reject) => {
-    execFile(GIT, ['-c', 'core.longpaths=true', ...args], { cwd: dir || undefined, windowsHide: true, maxBuffer: 1 << 26, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
-      (err, stdout, stderr) => {
-        if (err) { const all = (String(stdout) + String(stderr)).trim(); const e = new Error(all.split('\n').pop() || err.message); e.output = all; return reject(e); }
-        resolve(String(stdout).trim());
-      });
-  });
-}
-async function lsRemote(dir) {
-  const m = {};
-  for (const l of (await git(dir, 'ls-remote', '--heads', 'origin')).split('\n')) {
-    const f = l.split(/\s+/);
-    if (f.length === 2 && f[1].startsWith('refs/heads/')) m[f[1].slice(11)] = f[0];
-  }
-  return m;
-}
-const fetchAll = dir => git(dir, 'fetch', '--quiet', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*');
-async function listRefs(dir) {
-  let out = '';
-  try { out = await git(dir, 'for-each-ref', '--sort=-committerdate', '--format=%(refname)%09%(objectname)%09%(committerdate:unix)%09%(subject)', 'refs/remotes/origin'); } catch { return []; }
-  return out.split('\n').map(l => l.split('\t')).filter(f => f.length >= 4)
-    .map(f => ({ name: f[0].replace('refs/remotes/origin/', ''), sha: f[1], date: +f[2], subject: f.slice(3).join('\t') }))
-    .filter(r => r.name !== 'HEAD' && r.name !== 'gh-pages');
-}
-async function defaultBranch(dir) {
-  try { return (await git(dir, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')).replace(/^origin\//, ''); } catch {}
-  for (const b of ['main', 'master']) { try { await git(dir, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/' + b); return b; } catch {} }
-  return 'main';
-}
 
 // ---------- child processes ----------
 const ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
@@ -231,7 +127,7 @@ function pnpmVersion(pkg) {
   } catch {}
   return '10';
 }
-// installs pnpm once, inside Atelier's folder, and returns its entry point
+// installs pnpm once, inside Atelier's own folder, and returns its entry point
 async function pnpmEntry(pkg) {
   const ver = pnpmVersion(pkg);
   const dir = path.join(DATA, 'tools', 'pnpm-' + ver);
@@ -277,13 +173,17 @@ function staticRoot(dir) {
   for (const d of ['public', 'docs', 'site', 'www', 'src', 'dist', 'build']) if (exists(path.join(dir, d, 'index.html'))) return path.join(dir, d);
   return dir;
 }
+// values the site needs to run, kept on this computer only: <owner-repo>.env.local or .env.local, next to the inbox or in the data folder
+function copyEnvFile() {
+  for (const d of [path.dirname(INBOX), DATA]) for (const n of [S.slug + '.env.local', '.env.local']) {
+    try { fs.writeFileSync(path.join(S.dir, '.env.local'), fs.readFileSync(path.join(d, n))); log(`Using ${n} for the site.`); return; } catch {}
+  }
+}
 
 // installs what is needed, then starts the site (call under the lock)
 async function startSite() {
   stopDev();
-  for (const n of ['.env.local', 'env.local', '.env.local.txt', 'env.local.txt']) {
-    try { fs.writeFileSync(path.join(S.dir, '.env.local'), fs.readFileSync(path.join(HERE, n))); log(`Using ${n} for the site.`); break; } catch {}
-  }
+  copyEnvFile();
   const pkg = readPkg();
   if (!pkg || !(pkg.scripts && pkg.scripts.dev)) {
     S.mode = 'static'; S.staticRoot = staticRoot(S.dir);
@@ -321,191 +221,212 @@ async function startSite() {
       if (await portOpen(S.target)) { setStatus('ready'); log('Site ready: http://localhost:' + S.port); broadcast('reload'); return; }
       await sleep(400);
     }
-    if (!exited && S.devGen === gen) setStatus('error', 'The site is taking too long to start. Check the messages in the Atelier window.');
+    if (!exited && S.devGen === gen) setStatus('error', 'The site is taking too long to start.');
   })();
 }
 
-// moves the working copy to a commit and restarts what needs restarting
-function apply(branch, ref, first) {
-  return locked(async () => {
-    const before = lockHash();
-    try { await git(S.dir, 'checkout', '--force', '--detach', ref.sha); } catch (e) { setStatus('error', 'Could not update: ' + e.message); return; }
-    try { await git(S.dir, 'clean', '-fdq'); } catch {}
-    const wasMode = S.mode, wasStatus = S.status;
-    Object.assign(S, { branch, sha: ref.sha, subject: ref.subject, applied: Date.now() });
-    log(`${branch} @ ${ref.sha.slice(0, 7)}  ${ref.subject}`);
-    const pkg = readPkg();
-    const isStatic = !pkg || !(pkg.scripts && pkg.scripts.dev);
-    if (first || wasStatus === 'error' || lockHash() !== before || (wasMode === 'static') !== isStatic) { await startSite(); writeStatus(); return; }
-    broadcast('status');
-    broadcast(wasMode === 'static' ? 'reload' : 'updated');
-    writeStatus();
-  });
+// ---------- transfer files ----------
+// A transfer is a gzipped tar made by pack.sh in the cloud session:
+//   .atelier/transfer   key=value lines: repo, id, base, kind (full or delta), label
+//   .atelier/deleted    paths removed since "base", separated by NUL (delta only)
+//   …                   the site's files (all of them for "full", the changed ones for "delta")
+function parseOctal(b) {
+  if (b[0] & 0x80) { let n = 0; for (let i = 1; i < b.length; i++) n = n * 256 + b[i]; return n; }
+  const s = b.toString('latin1').replace(/[\0 ]+$/, '').trim();
+  return s ? parseInt(s, 8) : 0;
 }
-async function sync(first) {
-  if (S.session && !first) return;
-  const refs = await listRefs(S.dir);
-  let want;
-  if (S.auto) want = refs.find(r => r.name.startsWith(cfg.prefix)) || refs.find(r => r.name === S.defBr) || refs[0];
-  else {
-    want = refs.find(r => r.name === S.branch);
-    if (!want) { setStatus('error', `Branch "${S.branch}" does not exist (or no longer exists) on GitHub.`); return; }
+function parsePax(data) {
+  const out = {}; let i = 0;
+  while (i < data.length) {
+    const sp = data.indexOf(0x20, i); if (sp < 0) break;
+    const len = parseInt(data.toString('latin1', i, sp), 10); if (!len) break;
+    const rec = data.toString('utf8', sp + 1, i + len - 1);
+    const eq = rec.indexOf('='); if (eq > 0) out[rec.slice(0, eq)] = rec.slice(eq + 1);
+    i += len;
   }
-  if (!want) { setStatus('error', 'No branch found in the repository.'); return; }
-  if (first || want.sha !== S.sha || want.name !== S.branch) {
-    if (!first && want.name !== S.branch) log('Now following branch ' + want.name);
-    await apply(want.name, want, first);
+  return out;
+}
+function* tarEntries(buf) {
+  const cstr = b => { const e = b.indexOf(0); return b.toString('utf8', 0, e < 0 ? b.length : e); };
+  let off = 0, longName = '', longLink = '', pax = {};
+  while (off + 512 <= buf.length) {
+    const h = buf.subarray(off, off + 512);
+    if (h[0] === 0 && h.every(b => b === 0)) break;
+    const size = parseOctal(h.subarray(124, 136));
+    const type = h[156] ? String.fromCharCode(h[156]) : '0';
+    let name = cstr(h.subarray(0, 100));
+    if (h.toString('latin1', 257, 263) === 'ustar\0') { const prefix = cstr(h.subarray(345, 500)); if (prefix) name = prefix + '/' + name; }
+    const data = buf.subarray(off + 512, off + 512 + size);
+    off += 512 + Math.ceil(size / 512) * 512;
+    if (type === 'L') { longName = cstr(data); continue; }
+    if (type === 'K') { longLink = cstr(data); continue; }
+    if (type === 'x') { pax = parsePax(data); continue; }
+    if (type === 'g') continue;
+    yield { name: (pax.path || longName || name).replace(/^\.\//, ''), type, data, link: pax.linkpath || longLink || cstr(h.subarray(157, 257)) };
+    longName = longLink = ''; pax = {};
   }
 }
-async function pollLoop(gen) {
-  let prev = {}; try { prev = await lsRemote(S.dir); } catch {}
-  let fails = 0, lastChange = Date.now();
-  while (S.gen === gen) {
-    await sleep(Date.now() - lastChange > 20 * 60000 ? 5000 : 2000); // every 2 s while working, every 5 s when idle
-    if (S.gen !== gen) return;
-    let cur;
-    try { cur = await lsRemote(S.dir); } catch (e) { if (++fails === 5) log(`GitHub is not answering (${e.message}). Retrying…`); continue; }
-    if (fails >= 5) log('Connection to GitHub restored.');
-    fails = 0;
-    const keys = new Set([...Object.keys(cur), ...Object.keys(prev)]);
-    if (![...keys].some(k => cur[k] !== prev[k])) continue;
-    prev = cur; lastChange = Date.now();
-    try { await fetchAll(S.dir); } catch (e) { log('Could not fetch: ' + e.message); continue; }
-    if (S.gen === gen) await sync(false);
-  }
+const PROTECTED = new Set(['node_modules', '.git', '.next', '.atelier']);
+function safeJoin(root, rel) {
+  rel = String(rel).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const parts = rel.split('/');
+  if (!rel || rel.startsWith('/') || /^[A-Za-z]:/.test(rel) || parts.some(p => p === '..' || p === '' || p === '.')) return '';
+  if (PROTECTED.has(parts[0])) return '';
+  return path.join(root, ...parts);
+}
+const repoSlug = repo => repo.replace(/[^A-Za-z0-9._-]+/g, '-');
+const siteStateFile = () => S.dir + '.json';
+function pruneEmptyDirs(file) {
+  let d = path.dirname(file);
+  while (d.startsWith(S.dir + path.sep)) { try { fs.rmdirSync(d); } catch { break; } d = path.dirname(d); }
 }
 
-// ---------- changes received from the cloud session ----------
-const BUNDLE_RE = /^preview@([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+?)( \(\d+\))?\.bundle$/;
-const bundleRepo = file => { const m = BUNDLE_RE.exec(path.basename(file)); return m ? `${REPO_BASE}${m[1]}/${m[2]}.git` : ''; };
-function newestBundle() {
+// switches the site on display (call under the lock)
+function openSite(repo) {
+  stopDev();
+  Object.assign(S, { repo, slug: repoSlug(repo), id: '', label: '', mode: '', notice: '', needFull: false, applied: 0 });
+  S.dir = path.join(DATA, 'sites', S.slug);
+  const st = readJSON(siteStateFile());
+  if (st && exists(S.dir)) Object.assign(S, { id: st.id || '', label: st.label || '', applied: st.time || 0 });
+  fs.mkdirSync(DATA, { recursive: true });
+  fs.writeFileSync(path.join(DATA, 'last.json'), JSON.stringify({ repo }));
+}
+
+async function applyTransfer(file) {
+  let entries;
+  try { entries = [...tarEntries(zlib.gunzipSync(fs.readFileSync(file)))]; } catch (e) { note(`A transfer was received but could not be read (${e.message}).`); return; }
+  const metaEntry = entries.find(e => e.name === '.atelier/transfer');
+  if (!metaEntry) { note('A file was received that is not an Atelier transfer.'); return; }
+  const m = {};
+  for (const l of metaEntry.data.toString('utf8').split('\n')) { const i = l.indexOf('='); if (i > 0) m[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(m.repo || '') || !/^[0-9a-f]{7,64}$/.test(m.id || '') || !['full', 'delta'].includes(m.kind)) { note('A transfer was received with an unreadable description.'); return; }
+  const delEntry = entries.find(e => e.name === '.atelier/deleted');
+  const deleted = delEntry ? delEntry.data.toString('utf8').split('\0').filter(Boolean) : [];
+
+  await locked(async () => {
+    S.seen = m.id; // the last transfer looked at, applied or not
+    const first = m.repo !== S.repo;
+    if (first) { log((S.repo ? 'The cloud session works on another site: ' : 'Site of the session: ') + m.repo); openSite(m.repo); }
+    const st = (exists(S.dir) && readJSON(siteStateFile())) || { id: '', files: [] };
+    if (m.id === st.id) { // already applied (same transfer seen again, or nothing changed)
+      S.notice = ''; S.needFull = false;
+      if (first || !['ready', 'install', 'start'].includes(S.status)) await startSite(); else writeStatus();
+      return;
+    }
+    if (m.kind === 'delta' && m.base !== st.id) {
+      note('This computer does not have the state these changes start from. A full snapshot is needed.', true);
+      if (first && st.id) await startSite();
+      return;
+    }
+    const before = lockHash(), wasMode = S.mode, wasStatus = S.status;
+    const files = new Set(m.kind === 'full' ? [] : st.files || []);
+    const incoming = new Set();
+    if (m.kind === 'full' && !st.id && exists(S.dir)) { // leftovers of an unknown state: keep only the installed dependencies
+      for (const n of fs.readdirSync(S.dir)) if (n !== 'node_modules') fs.rmSync(path.join(S.dir, n), { recursive: true, force: true });
+    }
+    fs.mkdirSync(S.dir, { recursive: true });
+    let written = 0, skipped = 0;
+    for (const e of entries) {
+      if (e.name.startsWith('.atelier/') || e.name === '.atelier') continue;
+      if (e.type === '5') continue; // directories are created as needed
+      const dest = safeJoin(S.dir, e.name);
+      if (!dest || !['0', '7', '2'].includes(e.type)) { skipped++; continue; }
+      try {
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        if (e.type === '2') { try { fs.rmSync(dest, { force: true, recursive: true }); } catch {} fs.symlinkSync(e.link, dest); }
+        else {
+          try { if (fs.lstatSync(dest).isSymbolicLink() || fs.lstatSync(dest).isDirectory()) fs.rmSync(dest, { force: true, recursive: true }); } catch {}
+          fs.writeFileSync(dest, e.data);
+        }
+        written++; files.add(e.name); incoming.add(e.name);
+      } catch (err) { skipped++; log(`Could not write ${e.name}: ${err.message}`); }
+    }
+    const toRemove = m.kind === 'full' ? (st.files || []).filter(f => !incoming.has(f)) : deleted;
+    let removed = 0;
+    for (const f of toRemove) {
+      const dest = safeJoin(S.dir, f); files.delete(f);
+      if (!dest) continue;
+      try { fs.rmSync(dest, { force: true, recursive: true }); removed++; pruneEmptyDirs(dest); } catch {}
+    }
+    const time = Date.now();
+    fs.writeFileSync(siteStateFile(), JSON.stringify({ repo: m.repo, id: m.id, label: m.label || '', time, files: [...files] }));
+    Object.assign(S, { id: m.id, label: m.label || '', applied: time, notice: '', needFull: false });
+    log(`${m.kind === 'full' ? 'Full snapshot' : 'Changes'} applied: ${written} file(s) written, ${removed} removed${skipped ? `, ${skipped} skipped` : ''}  (${m.id.slice(0, 7)})`);
+    const pkg = readPkg();
+    const isStatic = !pkg || !(pkg.scripts && pkg.scripts.dev);
+    if (first || !['ready', 'install', 'start'].includes(wasStatus) || lockHash() !== before || (wasMode === 'static') !== isStatic) { await startSite(); return; }
+    writeStatus(); broadcast('status');
+    broadcast(wasMode === 'static' ? 'reload' : 'updated');
+  });
+}
+
+const TRANSFER_RE = /^atelier@[A-Za-z0-9._-]+@[A-Za-z0-9._-]+?( \(\d+\))?\.tgz$/;
+function newestTransfer() {
   let best = null;
   for (const d of [INBOX, path.join(os.homedir(), 'Downloads')]) {
     let names = []; try { names = fs.readdirSync(d); } catch { continue; }
     for (const n of names) {
-      if (!BUNDLE_RE.test(n)) continue;
+      if (!TRANSFER_RE.test(n)) continue;
       try { const st = fs.statSync(path.join(d, n)); if (st.isFile() && (!best || st.mtimeMs > best.mtimeMs)) best = { file: path.join(d, n), mtimeMs: st.mtimeMs, size: st.size }; } catch {}
     }
   }
-  return best && best.mtimeMs > STARTED - 30 * 60000 ? best : null;
-}
-async function applyBundle(file) {
-  const fetchIt = () => git(S.dir, 'fetch', '--quiet', '--no-tags', file, '+refs/atelier/wip:refs/atelier/wip');
-  try { await fetchIt(); } catch {
-    try { await fetchAll(S.dir); } catch {} // the session's starting point may just have reached GitHub
-    try { await fetchIt(); } catch (e) {
-      log('Changes received but unusable: ' + (e.output || e.message));
-      note(`Changes received from the cloud session could not be applied (${e.message}).`);
-      return;
-    }
-  }
-  const sha = await git(S.dir, 'rev-parse', 'refs/atelier/wip');
-  const subject = await git(S.dir, 'log', '-1', '--format=%s', 'refs/atelier/wip');
-  const same = S.session && S.sha === sha;
-  Object.assign(S, { session: true, auto: false, notice: '' });
-  if (same) return;
-  log('Changes received from the cloud session.');
-  await apply(SESSION_LABEL, { name: SESSION_LABEL, sha, subject }, false);
+  return best;
 }
 async function watchInbox() {
   let applied = '', pending = '';
   for (;;) {
     await sleep(400);
-    const b = newestBundle();
-    if (!b) continue;
-    const sig = `${b.file}|${b.mtimeMs}|${b.size}`;
+    const t = newestTransfer();
+    if (!t) continue;
+    const sig = `${t.file}|${t.mtimeMs}|${t.size}`;
     if (sig === applied) continue;
     if (sig !== pending) { pending = sig; continue; } // wait until the file is fully written
     applied = sig;
-    const repo = bundleRepo(b.file);
-    if (repo !== cfg.repo) {
-      if (cfg.pinned) { note(`Changes received for ${repoLabel(repo)}, but this Atelier is pinned to ${repoLabel(cfg.repo)}.`); continue; }
-      log(cfg.repo ? `The cloud session works on ${repoLabel(repo)}: switching site…` : 'Site of the session: ' + repoLabel(repo));
-      await openRepo(repo);
-    }
-    if (S.dir) await applyBundle(b.file);
+    await applyTransfer(t.file);
   }
-}
-
-// opens (or switches) the repository on display: local copy, starting branch, site, GitHub polling
-async function openRepo(repo) {
-  const gen = ++S.gen;
-  await locked(async () => { stopDev(); });
-  cfg.repo = repo;
-  if (!cfg.pinned) saveRepo(repo);
-  Object.assign(S, { dir: path.join(DATA, 'sites', repoSlug(repo)), branch: cfg.branch, auto: !cfg.branch, sha: '', subject: '', mode: '', session: false, notice: '' });
-  setStatus('clone');
-  if (!exists(path.join(S.dir, '.git'))) {
-    log('Fetching the site from GitHub for the first time…');
-    fs.rmSync(S.dir, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(S.dir), { recursive: true });
-    try { await git('', 'clone', '--quiet', '--no-checkout', repo, S.dir); } catch (e) {
-      const msg = `Could not fetch ${repoLabel(repo)} from GitHub (${e.message}). If the repository is private, Git on this computer must be signed in to your GitHub account.`;
-      log(msg); const d = S.dir; S.dir = ''; fs.rmSync(d, { recursive: true, force: true }); setStatus('error', msg); return;
-    }
-  } else {
-    try { if ((await git(S.dir, 'remote', 'get-url', 'origin')) !== repo) await git(S.dir, 'remote', 'set-url', 'origin', repo); } catch {}
-  }
-  try { await fetchAll(S.dir); } catch (e) { log(`Could not fetch right now (${e.message}): showing the last known version.`); }
-  S.defBr = await defaultBranch(S.dir);
-  await sync(true);
-  log(S.auto ? `Following the latest pushed "${cfg.prefix}…" branch (currently ${S.branch}).` : `Following branch ${S.branch}.`);
-  pollLoop(gen);
 }
 
 // ---------- local server ----------
 const OVERLAY = `
 <script>(function(){
 try{document.currentScript&&document.currentScript.remove()}catch(e){}
-if(window.__at)return;window.__at=1;var TK='__TOKEN__';
+if(window.__at)return;window.__at=1;
 var css='#__at{position:fixed;z-index:2147483647;right:12px;bottom:12px;font:12px/1.45 system-ui,sans-serif;color:#e6e8ee;background:#161920f2;border:1px solid #2a2f3a;border-radius:12px;box-shadow:0 10px 30px #0007;backdrop-filter:blur(8px);max-width:min(340px,calc(100vw - 24px));text-align:left;transition:border-color .3s}'+
 '#__at *{box-sizing:border-box}#__at .h{display:flex;align-items:center;gap:8px;padding:8px 11px;cursor:pointer;user-select:none}'+
 '#__at .d{width:8px;height:8px;border-radius:50%;background:#4ade80;flex:none}#__at .d.b{background:#fbbf24;animation:__atp 1s infinite}#__at .d.e{background:#f87171}'+
 '@keyframes __atp{50%{opacity:.35}}#__at.f{border-color:#4ade80}#__at.w .d{background:#fbbf24}'+
 '#__at code{font:11px ui-monospace,Menlo,Consolas,monospace;color:#7c9cff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#__at .n{margin-left:auto;color:#8b93a7;white-space:nowrap;padding-left:6px}'+
 '#__at .p{display:none;border-top:1px solid #2a2f3a;padding:9px 11px}#__at.o .p{display:block}'+
-'#__at .m{color:#8b93a7}#__at .s{color:#c9cedb;margin-bottom:8px;word-break:break-word}#__at .err{color:#fca5a5;margin-top:6px;word-break:break-word}'+
-'#__at select{width:100%;background:#0f1115;color:#e6e8ee;border:1px solid #2a2f3a;border-radius:7px;padding:5px 6px;font:inherit;margin:3px 0 7px}'+
-'#__at label{display:flex;gap:6px;align-items:center;color:#8b93a7;cursor:pointer}#__at button{font:inherit;border-radius:7px;padding:4px 9px;cursor:pointer;border:1px solid #2a2f3a;background:#1c2029;color:#e6e8ee;margin-top:8px}';
+'#__at .m{color:#8b93a7}#__at .s{color:#c9cedb;margin-bottom:4px;word-break:break-word}#__at .err{color:#fca5a5;margin-top:6px;word-break:break-word}'+
+'#__at button{font:inherit;border-radius:7px;padding:4px 9px;cursor:pointer;border:1px solid #2a2f3a;background:#1c2029;color:#e6e8ee;margin-top:8px}';
 var st=document.createElement('style');st.textContent=css;var el=document.createElement('div');el.id='__at';
 el.innerHTML='<div class="h"><span class="d"></span><code class="br"></code><span class="n"></span></div>'+
-'<div class="p"><div class="s"></div><div class="m">Branch on display</div><select></select>'+
-'<label><input type="checkbox" class="au"> <span class="al"></span></label><button class="rl">Reload the page</button><div class="err"></div></div>';
+'<div class="p"><div class="s"></div><div class="m"></div><button class="rl">Reload the page</button><div class="err"></div></div>';
 function mount(){var r=document.documentElement;r.appendChild(st);r.appendChild(el);
  new MutationObserver(function(){if(!el.isConnected){r.appendChild(st);r.appendChild(el)}}).observe(r,{childList:true});}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount);else mount();
-var q=function(s){return el.querySelector(s)},S=null,lastBr=null;
-q('.h').onclick=function(){el.classList.toggle('o');try{sessionStorage.__ato=el.classList.contains('o')?1:''}catch(e){}if(el.classList.contains('o'))branches()};
+var q=function(s){return el.querySelector(s)},S=null;
+q('.h').onclick=function(){el.classList.toggle('o');try{sessionStorage.__ato=el.classList.contains('o')?1:''}catch(e){}};
 try{if(sessionStorage.__ato)el.classList.add('o')}catch(e){}
 q('.rl').onclick=function(){location.reload()};
-function esc(s){return String(s||'').replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function ago(ms){var s=Math.max(0,Math.round((Date.now()-ms)/1000));if(s<5)return 'just now';if(s<60)return s+' s ago';var m=Math.round(s/60);if(m<60)return m+' min ago';return Math.round(m/60)+' h ago'}
-var LBL={waiting:'waiting…',clone:'fetching…',install:'installing…',start:'starting…',update:'updating…',error:'error'};
+var LBL={waiting:'waiting…',install:'installing…',start:'starting…',error:'error'};
 function paint(s){S=s;var busy=s.status&&s.status!=='ready'&&s.status!=='error';
- q('.br').textContent=s.branch||'—';q('.d').className='d'+(s.status==='error'?' e':busy?' b':'');
+ q('.br').textContent=s.showing||'—';q('.d').className='d'+(s.status==='error'?' e':busy?' b':'');
  q('.n').textContent=LBL[s.status]||(s.applied?ago(s.applied):'');
- q('.s').textContent=(s.subject||'')+(s.sha?'  ('+s.sha+')':'');
- q('.al').textContent=s.session?'Go back to the latest '+s.prefix+'… branch on GitHub':'Follow the latest '+s.prefix+'… branch automatically';q('.au').checked=!!s.auto;
- q('.err').textContent=s.status==='error'?s.error:(s.notice||'');el.classList.toggle('w',!!s.notice&&s.status!=='error');
- if(lastBr!==s.branch){lastBr=s.branch;if(el.classList.contains('o'))branches()}}
-function branches(){fetch('/__at/branches').then(function(r){return r.json()}).then(function(l){var cur=S&&S.branch;l=l||[];
- if(cur&&!l.some(function(b){return b.name===cur}))l.unshift({name:cur});
- q('select').innerHTML=l.map(function(b){return '<option value="'+esc(b.name)+'"'+(b.name===cur?' selected':'')+'>'+esc(b.name)+'</option>'}).join('')}).catch(function(){})}
-function post(b){return fetch('/__at/branch',{method:'POST',headers:{'Content-Type':'application/json','X-Atelier':TK},body:JSON.stringify(b)})}
-q('select').onchange=function(){post({branch:this.value})};
-q('.au').onchange=function(){post({auto:this.checked})};
+ q('.s').textContent=s.label||'';q('.m').textContent=(s.repo||'')+(s.id?'  ('+s.id.slice(0,7)+')':'');
+ q('.err').textContent=s.status==='error'?s.error:(s.notice||'');el.classList.toggle('w',!!s.notice&&s.status!=='error');}
 setInterval(function(){if(S)paint(S)},5000);
 function flash(){el.classList.add('f');setTimeout(function(){el.classList.remove('f')},1500)}
 var es=new EventSource('/__at/events');
 es.addEventListener('status',function(e){paint(JSON.parse(e.data))});
 es.addEventListener('updated',function(e){paint(JSON.parse(e.data));flash()});
 es.addEventListener('reload',function(e){var s=JSON.parse(e.data);if(s.mode==='static'||document.getElementById('__at_wait'))location.reload();else{paint(s);flash()}});
-})();</script>`.replace('__TOKEN__', S.token);
+})();</script>`;
 const htmlEscape = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function waitPage() {
   let title = 'Starting the site…', sub = 'The page will appear by itself as soon as it is ready.';
   if (S.status === 'waiting') { title = 'Waiting for the Claude Code session'; sub = 'Ask for a change in your cloud session: the site will appear here after the first transfer.'; }
-  else if (S.status === 'clone') title = 'Fetching the site…';
   else if (S.status === 'install') { title = 'Installing dependencies…'; sub = 'One to three minutes the first time. The page will appear by itself.'; }
   else if (S.status === 'error') { title = 'The site does not start'; sub = htmlEscape(S.error); }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Atelier</title></head><body style="font:15px system-ui,sans-serif;background:#0f1115;color:#e6e8ee;display:grid;place-items:center;height:100vh;margin:0"><div id="__at_wait" style="text-align:center;max-width:620px;padding:20px"><h2 style="font-weight:600">${title}</h2><p style="color:#8b93a7;line-height:1.5">${sub}</p></div><script>setTimeout(function(){location.reload()},5000)</script>${OVERLAY}</body></html>`;
@@ -561,6 +482,12 @@ function proxyUpgrade(req, socket, head) { // WebSocket: the framework's hot rel
   const kill = () => { socket.destroy(); up.destroy(); };
   up.on('error', kill); socket.on('error', kill);
 }
+function quit(why) {
+  log(why);
+  stopDev();
+  try { if ((readJSON(ENGINE_FILE) || {}).pid === process.pid) fs.rmSync(ENGINE_FILE, { force: true }); } catch {}
+  setTimeout(() => process.exit(0), WIN ? 500 : 150);
+}
 async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   switch (url.pathname) {
@@ -571,32 +498,20 @@ async function handle(req, res) {
       return;
     }
     case '/__at/state': return send(res, 200, JSON.stringify(publicState()), 'application/json');
-    case '/__at/branches': return send(res, 200, JSON.stringify(S.dir ? (await listRefs(S.dir)).slice(0, 60) : []), 'application/json');
-    case '/__at/branch': {
+    case '/__at/quit': {
       if (req.method !== 'POST' || req.headers['x-atelier'] !== S.token) return send(res, 403, 'Refused');
-      let body = ''; for await (const c of req) { body += c; if (body.length > 4096) break; }
-      let j = {}; try { j = JSON.parse(body || '{}'); } catch {}
-      if (typeof j.auto === 'boolean') { S.auto = j.auto; if (j.auto) Object.assign(S, { session: false, notice: '' }); }
-      if (j.branch) Object.assign(S, { branch: String(j.branch), auto: false, sha: '', session: false, notice: '' });
-      if (S.dir) sync(false).catch(() => {});
-      res.writeHead(204); return res.end();
+      send(res, 200, 'Stopping'); quit('Stopping the preview (asked by Claude).');
+      return;
     }
   }
   if (S.mode === 'static' && S.status === 'ready') return serveStatic(req, res, url.pathname);
   if (S.status !== 'ready') return wantsHTML(req) ? send(res, 503, waitPage(), MIME['.html']) : send(res, 503, 'Site is starting');
   proxyHttp(req, res);
 }
-
-function openBrowser(url) {
-  try {
-    if (WIN) spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', windowsHide: true, detached: true }).unref();
-    else spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
-  } catch {}
-}
 function atelierOn(port) { // is an Atelier already listening on this port?
   return new Promise(resolve => {
     const r = http.get({ host: '127.0.0.1', port, path: '/__at/state', timeout: 1500 }, res => {
-      let b = ''; res.on('data', d => b += d); res.on('end', () => { try { resolve('prefix' in JSON.parse(b)); } catch { resolve(false); } });
+      let b = ''; res.on('data', d => b += d); res.on('end', () => { try { resolve('atelier' in JSON.parse(b)); } catch { resolve(false); } });
     });
     r.on('error', () => resolve(false)); r.on('timeout', () => { r.destroy(); resolve(false); });
   });
@@ -606,33 +521,39 @@ function listen(server, port) {
 }
 
 // ---------- startup ----------
-console.log(`\n  Atelier ${VERSION} — live preview of the site edited by Claude Code\n`);
-if (+process.versions.node.split('.')[0] < 20) fatal(`Node.js 20 or later is required (current version: ${process.versions.node}).`);
+log(`Atelier ${VERSION} engine starting (Node ${process.versions.node}, ${process.platform})`);
+if (+process.versions.node.split('.')[0] < 20) { log(`Node.js 20 or later is required (current version: ${process.versions.node}).`); process.exit(1); }
 fs.mkdirSync(INBOX, { recursive: true }); fs.mkdirSync(DATA, { recursive: true });
 
 const server = http.createServer((req, res) => handle(req, res).catch(e => { try { send(res, 500, String(e && e.message || e)); } catch {} }));
 server.on('upgrade', proxyUpgrade);
-for (let p = cfg.port; p < cfg.port + 20 && !S.port; p++) {
+for (let p = BASE_PORT; p < BASE_PORT + 20 && !S.port; p++) {
   if (await listen(server, p)) S.port = p;
-  else if (await atelierOn(p)) {
-    console.log(`  Atelier is already running: http://localhost:${p}`);
-    if (cfg.open) openBrowser('http://localhost:' + p);
-    await sleep(1500); process.exit(0);
-  }
+  else if (await atelierOn(p)) { log(`Atelier is already running on port ${p}.`); process.exit(0); }
 }
-if (!S.port) fatal(`No free port between ${cfg.port} and ${cfg.port + 19}.`);
-const siteURL = 'http://localhost:' + S.port;
-console.log(`  Site    : ${cfg.repo ? repoLabel(cfg.repo) : 'the one of the Claude Code session (waiting for the first transfer)'}\n  Preview : ${siteURL}\n  Inbox   : ${INBOX}\n\n  Keep this window open. Close it to stop the preview.\n`);
+if (!S.port) { log(`No free port between ${BASE_PORT} and ${BASE_PORT + 19}.`); process.exit(1); }
+fs.writeFileSync(ENGINE_FILE, JSON.stringify({ pid: process.pid, port: S.port, token: S.token, version: VERSION, started: Date.now() }));
+log(`Preview: http://localhost:${S.port}   Inbox: ${INBOX}   Data: ${DATA}`);
 
-GIT = await findGit();
-if (!GIT) fatal('Git is not installed on this computer.\nInstall "Git for Windows" from https://git-scm.com/downloads/win (default options), then start Atelier again.');
-
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { console.log('\n  Stopping the preview…'); stopDev(); setTimeout(() => process.exit(0), WIN ? 400 : 100); });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => quit('Stopping the preview…'));
 process.on('exit', () => killTree(S.dev));
 setInterval(() => { for (const c of S.clients) c.write(': ping\n\n'); }, 20000).unref();
-if (cfg.open) openBrowser(siteURL);
 
-writeStatus();
-if (cfg.repo) await openRepo(cfg.repo);
-else log('Waiting for the first transfer from the Claude Code session…');
+// Claude keeps a heartbeat file fresh while it runs; without it for 90 seconds, the preview stops.
+if (SUPERVISED) {
+  const started = Date.now();
+  setInterval(() => {
+    let age = Infinity; try { age = Date.now() - fs.statSync(HEARTBEAT).mtimeMs; } catch {}
+    if (age > 90000 && Date.now() - started > 90000) quit('Claude is no longer running: stopping the preview.');
+  }, 15000).unref();
+}
+
+// bring back the last site on display, then wait for transfers
+const last = readJSON(path.join(DATA, 'last.json'));
+if (last && last.repo) {
+  await locked(async () => {
+    openSite(last.repo);
+    if (S.id) { log(`Bringing back ${S.repo} (${S.id.slice(0, 7)}).`); await startSite(); } else { S.repo = ''; setStatus('waiting'); }
+  });
+} else { writeStatus(); log('Waiting for the first transfer from the Claude Code session…'); }
 watchInbox();

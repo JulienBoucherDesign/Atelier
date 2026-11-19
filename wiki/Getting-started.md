@@ -1,55 +1,51 @@
 # Getting started
 
-Two things to set up: the skill in Claude (once per account) and Atelier on your computer (once per computer).
+One thing to set up, once: the Atelier plugin in Claude.
 
 ## Requirements
 
 | What | Why |
 | --- | --- |
-| Claude desktop app | It carries the changes from the cloud session to your computer |
-| A Claude Code cloud session on your site's repository | That is where Claude edits the site |
-| Git | Atelier keeps its own copy of the site. Sign in to GitHub if the repository is private. On Windows: [Git for Windows](https://git-scm.com/downloads/win) |
-| Node.js 20 or later | Atelier is a Node.js script. On Windows, if Node.js is missing, the launcher downloads the official portable build from nodejs.org into the Atelier folder |
+| Claude desktop app, open on your computer | It starts Atelier and carries the changes from the cloud session to your computer |
+| A Claude Code cloud session on your site's repository, opened in that app | That is where Claude edits the site |
+| Node.js 20 or later on your computer | Atelier is plain Node.js scripts, and your site's development server needs it too |
 
-Nothing is installed system-wide by Atelier itself.
+Git is not needed on your computer. Atelier needs no account.
 
-## 1. Add the skill to Claude
+## 1. Install the plugin
 
-The skill tells Claude Code what to do after each edit.
+In the Claude desktop app:
 
-1. Download [`atelier-direct-skill.zip`](https://github.com/JulienBoucherDesign/Atelier/blob/main/atelier-direct-skill.zip) from the repository.
-2. In Claude, open **Customize > Skills**, click **+**, then **Create skill**, then **Upload a skill**, and pick the ZIP.
+1. Open **Customize > Plugins**.
+2. Choose **Add > Add marketplace** and enter `JulienBoucherDesign/Atelier`.
+3. Install the **atelier** plugin.
+4. Restart the Claude desktop app if Atelier's tools do not show up in your next session.
 
-Skills need code execution enabled in your Claude settings. The skill is one readable file: [`skill/atelier-direct/SKILL.md`](https://github.com/JulienBoucherDesign/Atelier/blob/main/skill/atelier-direct/SKILL.md).
+The plugin is saved to your Claude account. It brings two things:
 
-## 2. Get Atelier on your computer
+- a **skill**, which tells Claude Code what to do after each edit;
+- a **local program**, which the Claude desktop app starts on your computer. On the plugin's page it is the connector marked **Runs in each session**.
 
-Atelier is two files that must sit together in one folder: `Atelier.cmd` and `atelier.mjs`.
+From the Claude Code command line, the equivalent is `/plugin install atelier --marketplace JulienBoucherDesign/Atelier`.
 
-**Let Claude do it.** Open your cloud session in the Claude desktop app and ask Claude to *use atelier-direct*. Claude:
+A plugin from a marketplace you add yourself is not reviewed by Anthropic. Atelier is a few readable text files; read them before installing if you wish.
 
-1. asks which folder Atelier should live in;
-2. asks for access to that folder (you approve the prompt);
-3. fetches the two files from this repository and drops them there.
+## 2. First run
 
-**Or do it yourself.** Download the two files from the repository and put them in a folder of your choice.
+1. Open your Claude Code cloud session in the Claude desktop app.
+2. Ask for a change to your site, or ask Claude to *use Atelier*.
+3. Claude asks once for access to Atelier's inbox folder, a subfolder of your system's temporary folder. Approve it.
+4. Claude sends a full copy of the site. Atelier installs the site's dependencies, which takes a few minutes, once per site.
+5. The site appears at `http://localhost:3210`, in the browser panel next to the conversation.
 
-### Which folder
+You never launch anything yourself.
 
-Any folder works, for example `Documents\Atelier`.
+## Updating
 
-If you do not want Atelier among your own files, name the system temporary folder: on Windows, `%TEMP%\atelier`. The system may empty that folder from time to time; Claude then drops the files again, and Atelier clones the site again on its next start.
+Atelier updates from this repository. In **Customize > Plugins**, select **Check for updates** on the marketplace, or turn on **Sync automatically**.
 
-## 3. First run
+## Removing
 
-1. Start Atelier.
-   - Windows: double-click `Atelier.cmd`, or press `Windows + R` and enter its path (for example `%TEMP%\atelier\Atelier.cmd`). Windows may ask for confirmation the first time.
-   - macOS or Linux: run `node atelier.mjs` in a terminal, from the Atelier folder.
-2. Leave the console window open. Your browser opens `http://localhost:3210` on a waiting page.
-3. In the cloud session, ask Claude for a change.
-4. Atelier receives the first transfer, clones the repository and installs its dependencies. This takes a few minutes, once per repository.
-5. The site appears.
-
-Claude cannot start Atelier for you: starting it is the one manual step.
+Remove the plugin from **Customize > Plugins**. Atelier's site copies live in Claude's own plugin data folder and in a temporary folder; see [Settings](Settings) for where.
 
 Next: [Daily use](Daily-use).
