@@ -1,39 +1,40 @@
 # Troubleshooting
 
-Two places tell you what is going on: the Atelier console window, and `inbox/status.json` in the Atelier folder (see [Settings](Settings)). Claude can read the second one for you.
+Claude can see what Atelier is doing: ask it to check Atelier's status. The answer includes the last lines of Atelier's log when something is not ready.
 
-## Starting Atelier
+## Claude says it has no Atelier tool on the computer
 
-**Windows asks for confirmation.** Expected the first time for a `.cmd` file. You can open `Atelier.cmd` in a text editor to read it first.
-
-**"Node.js 20 or later was not found".** The launcher downloads a portable copy into the Atelier folder. If the download fails, install Node.js (LTS) from nodejs.org and start again.
-
-**Git is missing.** Install [Git for Windows](https://git-scm.com/downloads/win), or Git for your system, and start again.
-
-**The port is busy.** Another program uses port 3210. Set another one with `port=` in `atelier.txt`.
-
-**The Atelier files are gone.** If Atelier lives in the system temporary folder, the system may have emptied it. Ask Claude to use atelier-direct again: it drops the files again.
+- The Claude desktop app must be open on the computer, and the conversation must be opened in it.
+- The plugin must be installed and turned on in **Customize > Plugins**.
+- Restart the Claude desktop app after installing the plugin.
+- Node.js 20 or later must be installed on the computer. Without it, the app cannot start Atelier. Install the LTS version from nodejs.org, then restart Claude.
 
 ## First transfer
 
-**The waiting page stays for minutes.** Normal the first time for a repository: Atelier clones it and installs its dependencies. The console shows the progress.
+**Claude asks for access to a folder.** Expected, once per session: it is Atelier's inbox, a subfolder of the system's temporary folder.
 
-**The clone fails.** The repository is private and Git on this computer is not signed in to GitHub. Clone the repository once by hand to sign in, then start Atelier again.
+**The waiting page stays for minutes.** Normal the first time for a site: Atelier installs its dependencies.
 
-**The install fails.** Read the error in the console. Projects that need a specific Node.js version or system tools need them on this computer too.
+**The install fails.** Ask Claude for the status and read the error. Projects that need a specific Node.js version or system tools need them on this computer too.
 
 ## While working
 
-**Nothing changes in the page.** Check the badge: it must show `cloud session (not pushed)`. Then ask Claude to check `inbox/status.json`: its `commit` field must match the last transfer.
+**Nothing changes in the page.** Ask Claude to check the status. The transfer on display must be the last one it sent.
 
-**"Changes received from the cloud session could not be applied".** The starting point of the cloud session is not on GitHub, or this computer cannot read the repository. Make sure the session started from a branch that exists on GitHub.
+**Claude says a full snapshot is needed.** Atelier's copy of the site is missing or older than expected, for example after the system emptied a folder. Claude sends a full copy; nothing is lost.
 
-**Claude cannot reach the computer.** The Claude desktop app must be open and online, and the conversation must be open in it. As a fallback, Claude can send the `preview@owner@repo.bundle` file in the conversation: save it to your Downloads folder and Atelier picks it up.
+**Claude cannot reach the computer.** The Claude desktop app must be open and online.
 
-**The site shows an error.** The code no longer compiles, or it fails at run time. The error appears in the page and in the console. Tell Claude: it can read the error in `status.json`, fix the code and send again.
+**The site shows an error.** The code no longer compiles, or it fails at run time. The error appears in the page. Tell Claude: it reads the error from the status, fixes the code and sends again.
 
-**Missing images or data.** The site probably needs a `.env.local` file in the Atelier folder. See [Settings](Settings).
+**Missing images or data.** The site probably needs a `.env.local` file. See [Settings](Settings).
+
+**The address is not `localhost:3210`.** Another program uses that port, so Atelier took the next free one. Claude knows the address from the status.
+
+## Starting over
+
+Close the Claude desktop app, delete Atelier's inbox folder (and its data folder if you want to free the space), and open Claude again. See [Settings](Settings) for the locations.
 
 ## Reporting a problem
 
-Open an issue with the console output and the content of `inbox/status.json`. Remove anything private first: repository names, addresses, and any value from `.env.local`.
+Open an issue with the status Claude reported. Remove anything private first: repository names, addresses, and any value from `.env.local`.

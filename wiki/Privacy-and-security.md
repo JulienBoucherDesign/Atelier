@@ -1,50 +1,46 @@
 # Privacy and security
 
-Atelier is two text files you can read before running them. This page lists what they do.
+Atelier is a few text files you can read before installing. This page lists what they do.
 
 ## No account, no key, no telemetry
 
 - Atelier has no account system and no key of its own.
 - It sends no usage data anywhere.
-- It does not know or contact your hosting provider. Deployment is not its business.
+- It never contacts GitHub, and it does not know or contact your hosting provider. Deployment is not its business.
 
-## What it reads from GitHub
+## Where your site's files travel
 
-Atelier clones and fetches your site's repository with the Git access already set up on your computer. It does not store or handle GitHub credentials itself.
+Your uncommitted changes go from the cloud session to your computer through the Claude desktop app, as transfer files. They are not uploaded to GitHub or to any third party.
 
-Atelier never writes to GitHub: it does not commit, push or open pull requests. Pushing is done by Claude Code, in the cloud session, only when you ask for it.
+Pushing to GitHub is done by Claude Code, in the cloud session, only when you ask for it.
 
 ## What it contacts
 
 | Address | When | Why |
 | --- | --- | --- |
-| `github.com` | Start, and while following a branch | Clone and fetch the repository (read only) |
-| `registry.npmjs.org` | First run per repository, and when the lockfile changes | The package manager and the site's dependencies |
-| `nodejs.org` | Windows launcher, only if Node.js is missing | The official portable Node.js build |
+| `registry.npmjs.org` | First run per site, and when the lockfile changes | The package manager and the site's dependencies |
 
 The site itself may contact its own services while it runs, exactly as it does on a developer's machine.
 
 ## What it writes on your computer
 
-Only inside its own folder: `inbox/` and `data/`. It adds nothing to the system and changes no system setting. Delete the folder to remove everything.
+Only in its two folders: the inbox, in the system's temporary folder, and its data folder, inside Claude's own folder. See [Settings](Settings). It adds nothing to the system and changes no system setting.
 
-Claude, for its part, writes only into the Atelier folder, using the access you approved for that folder.
+Claude, for its part, writes only into the inbox, using the access you approved for that folder. Atelier is never driven through your mouse, keyboard or screen.
+
+## What it runs
+
+Atelier runs while the Claude desktop app is open and stops by itself within two minutes after Claude closes. It installs your site's dependencies and runs its development server, as any developer would. Use it with repositories you trust.
+
+When it unpacks a transfer, Atelier refuses any path that would land outside its copy of the site.
 
 ## The preview is local
 
-The preview listens on `127.0.0.1` only. It is not reachable from other devices on your network or from the internet. Actions triggered from the badge are protected by a random value generated at each start.
-
-## The transfer file
-
-The transfer file holds your uncommitted changes. It travels from the cloud session to your computer through the Claude desktop app. It is not uploaded to GitHub or to any third party.
+The preview listens on `127.0.0.1` only. It is not reachable from other devices on your network or from the internet. The request that stops the preview is protected by a random value generated at each start.
 
 ## Secrets your site needs
 
-If the site needs values to run, you put them in a `.env.local` file in the Atelier folder. Atelier copies that file into its local copy of the site and does nothing else with it.
+If the site needs values to run, you put them in a `.env.local` file next to the inbox. Atelier copies that file into its local copy of the site and does nothing else with it.
 
-- Keep that file out of every repository.
+- Keep that file out of every repository, and do not paste its content into a conversation.
 - This repository contains no site-specific value, key or account, and it should stay that way: do not include yours in issues or pull requests.
-
-## Running code from the repository
-
-Atelier installs your site's dependencies and runs its development server, as any developer would. Use it with repositories you trust.
