@@ -34,7 +34,7 @@ const log = m => console.log(new Date().toTimeString().slice(0, 8) + '  ' + m);
 const S = {
   repo: '', slug: '', dir: '', id: '', seen: '', label: '', status: 'waiting', error: '', notice: '', needFull: false,
   mode: '', target: '', applied: 0, staticRoot: '', port: 0,
-  dev: null, devGen: 0, clients: new Set(), token: crypto.randomBytes(16).toString('hex'),
+  dev: null, devGen: 0, webpack: false, clients: new Set(), token: crypto.randomBytes(16).toString('hex'),
 };
 const publicState = () => ({
   atelier: VERSION, repo: S.repo, showing: S.repo ? LABEL : '', id: S.id, seen: S.seen, label: S.label, status: S.status, error: S.error,
@@ -158,6 +158,43 @@ async function installDeps(pkg) {
   fs.writeFileSync(hashFile, h);
   log('Dependencies installed.');
 }
+// Next.js takes as its project root the folder of the highest lockfile it finds above the site. A stray
+// package-lock.json in the user's home folder then breaks the site. This preload, given to the site's
+// Node processes, keeps Next.js from looking above Atelier's copy of the site.
+const NEXT_ROOT_PRELOAD = `// Written by Atelier. Keeps Next.js from taking a folder above the site as its project root.
+const path = require('path');
+try {
+  const site = process.env.ATELIER_SITE_ROOT;
+  const findUp = require(require.resolve('next/dist/compiled/find-up', { paths: [site] }));
+  const NAMES = new Set(['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb']);
+  const inside = f => { const r = path.relative(site, f); return !r.startsWith('..') && !path.isAbsolute(r); };
+  const sync = findUp.sync;
+  if (site && sync && !sync.__atelier) {
+    findUp.sync = function (names, opts) {
+      const found = sync.apply(this, arguments);
+      const list = Array.isArray(names) ? names : [names];
+      if (found && typeof found === 'string' && list.length && list.every(n => NAMES.has(n)) && !inside(found)) return undefined;
+      return found;
+    };
+    findUp.sync.__atelier = true;
+  }
+} catch {}
+`;
+function nextRootEnv() {
+  const file = path.join(DATA, 'tools', 'next-root.cjs');
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); if (!exists(file) || fs.readFileSync(file, 'utf8') !== NEXT_ROOT_PRELOAD) fs.writeFileSync(file, NEXT_ROOT_PRELOAD); }
+  catch { return {}; }
+  const opts = (process.env.NODE_OPTIONS || '').trim();
+  return { ATELIER_SITE_ROOT: S.dir, NODE_OPTIONS: (opts ? opts + ' ' : '') + `--require "${file.replace(/\\/g, '/')}"` };
+}
+function lockfilesAbove(dir) {
+  const found = [];
+  for (let d = path.dirname(dir); ; d = path.dirname(d)) {
+    for (const n of ['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb']) if (exists(path.join(d, n))) found.push(path.join(d, n));
+    if (path.dirname(d) === d) break;
+  }
+  return found;
+}
 function freePort() {
   return new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); s.on('error', () => resolve(3000)); });
 }
@@ -199,6 +236,9 @@ async function startSite() {
   if (exists(nextBin) && /^next dev(\s+[-\w=.]+)*$/.test(script)) {
     mode = 'next';
     args = [nextBin, 'dev', ...script.split(/\s+/).slice(2), '-p', String(port), '-H', '127.0.0.1'];
+    if (S.webpack && !args.includes('--webpack')) { args = args.filter(a => a !== '--turbopack' && a !== '--turbo'); args.push('--webpack'); }
+    const above = lockfilesAbove(S.dir);
+    if (above.length) log('Lockfile(s) found above the site, ignored: ' + above.join(', '));
   } else {
     try { args = [await pnpmEntry(pkg), 'run', 'dev']; } catch (e) { setStatus('error', e.message); return; }
   }
@@ -206,12 +246,17 @@ async function startSite() {
   const gen = ++S.devGen;
   log('Starting the site…');
   const onLine = l => { if (mode !== 'next') { const m = URL_RE.exec(l); if (m && S.devGen === gen) S.target = '127.0.0.1:' + m[1]; } };
-  const { proc, done } = run(S.dir, childEnv({ PORT: String(port), HOST: '127.0.0.1' }), onLine, process.execPath, args);
+  const { proc, done } = run(S.dir, childEnv({ PORT: String(port), HOST: '127.0.0.1', ...nextRootEnv() }), onLine, process.execPath, args);
   S.dev = proc;
   let exited = false;
   done.then(({ tail }) => {
     exited = true;
     if (S.devGen !== gen) return;
+    // Turbopack could not settle on the project folder: start again once with Next.js's other bundler.
+    if (mode === 'next' && !S.webpack && /turbopack\.root|inferred your workspace root/.test(tail.join(' '))) {
+      S.webpack = true; log('Turbopack could not start this site here: starting it again with webpack.');
+      locked(startSite); return;
+    }
     const msg = 'The site stopped' + (tail.length ? ': ' + tail.slice(-4).join(' | ') : '');
     log(msg); setStatus('error', msg);
   });
@@ -284,7 +329,7 @@ function pruneEmptyDirs(file) {
 // switches the site on display (call under the lock)
 function openSite(repo) {
   stopDev();
-  Object.assign(S, { repo, slug: repoSlug(repo), id: '', label: '', mode: '', notice: '', needFull: false, applied: 0 });
+  Object.assign(S, { repo, slug: repoSlug(repo), id: '', label: '', mode: '', notice: '', needFull: false, applied: 0, webpack: false });
   S.dir = path.join(DATA, 'sites', S.slug);
   const st = readJSON(siteStateFile());
   if (st && exists(S.dir)) Object.assign(S, { id: st.id || '', label: st.label || '', applied: st.time || 0 });
