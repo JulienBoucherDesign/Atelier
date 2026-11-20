@@ -70,9 +70,9 @@ Everything is readable text: there is no installer and no compiled binary.
 
 Early version.
 
-- Tested: the full chain on Linux with a Next.js 16 site and with a static site: first full copy, live updates, added and deleted files, undo, switching between two sites, recovery when the computer lost its copy, stop and restart, automatic stop when Claude closes.
-- Tested: dropping files onto a Windows computer through the Claude desktop app.
-- Not verified yet: the plugin installed in the Claude desktop app on Windows, end to end.
+- Tested on Windows: the plugin installed in the Claude desktop app, driven from a Claude Code cloud session, with a Next.js 16 site. First full copy, dependency install, preview next to the conversation, live update of a single changed file without a page reload.
+- Tested on Linux: the same chain with a Next.js 16 site and a static site, plus added and deleted files, undo, switching between two sites, recovery when the computer lost its copy, stop and restart, and automatic stop when Claude closes.
+- Not tested yet: macOS.
 
 Please open an issue if something fails. Remove anything private from what you paste.
 

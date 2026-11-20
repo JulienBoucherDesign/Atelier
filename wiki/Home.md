@@ -40,8 +40,8 @@ There is nothing to launch and nothing to place in your own folders.
 
 Early version.
 
-- Tested: the full chain on Linux with a Next.js 16 site and with a static site.
-- Tested: dropping files onto a Windows computer through the Claude desktop app.
-- Not verified yet: the plugin installed in the Claude desktop app on Windows, end to end.
+- Tested on Windows: the plugin in the Claude desktop app, driven from a cloud session, with a Next.js 16 site, including live updates without a page reload.
+- Tested on Linux: the full chain with a Next.js 16 site and with a static site.
+- Not tested yet: macOS.
 
 Please open an issue if something fails. Remove anything private from what you paste.

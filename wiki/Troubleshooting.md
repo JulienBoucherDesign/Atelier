@@ -15,6 +15,8 @@ Claude can see what Atelier is doing: ask it to check Atelier's status. The answ
 
 **The waiting page stays for minutes.** Normal the first time for a site: Atelier installs its dependencies.
 
+**The site stops right after starting, with a message about `turbopack.root`.** Fixed in version 5.1: update the plugin (Customize > Plugins > Check for updates), then quit and reopen the Claude desktop app.
+
 **The install fails.** Ask Claude for the status and read the error. Projects that need a specific Node.js version or system tools need them on this computer too.
 
 ## While working
