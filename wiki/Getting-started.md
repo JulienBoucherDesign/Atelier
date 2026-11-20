@@ -33,7 +33,7 @@ A plugin from a marketplace you add yourself is not reviewed by Anthropic. Ateli
 ## 2. First run
 
 1. Open your Claude Code cloud session in the Claude desktop app.
-2. Ask for a change to your site, or ask Claude to *use Atelier*.
+2. Ask for a change to your site, ask Claude to *use Atelier*, or paste the [starter prompt](Daily-use#starter-prompt).
 3. Claude asks once for access to Atelier's inbox folder, a subfolder of your system's temporary folder. Approve it.
 4. Claude sends a full copy of the site. Atelier installs the site's dependencies, which takes a few minutes, once per site.
 5. The site appears at `http://localhost:3210`, in the browser panel next to the conversation.

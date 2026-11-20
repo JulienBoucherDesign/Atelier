@@ -21,6 +21,8 @@ Claude can see what Atelier is doing: ask it to check Atelier's status. The answ
 
 ## While working
 
+**Claude says the preview is ready but you see nothing.** The app's browser panel is hidden. Press **Ctrl + Shift + B** (Cmd + Shift + B on macOS), or close what is open in the right panel and click the globe icon. You can also open `http://localhost:3210` in your usual browser.
+
 **Nothing changes in the page.** Ask Claude to check the status. The transfer on display must be the last one it sent.
 
 **Claude says a full snapshot is needed.** Atelier's copy of the site is missing or older than expected, for example after the system emptied a folder. Claude sends a full copy; nothing is lost.
