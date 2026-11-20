@@ -2,7 +2,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
-export const VERSION = '5.0';
+export const VERSION = '5.1';
 
 // Site copies, their dependencies, logs. Inside Claude's own plugin folder when Claude provides one.
 export function dataDir() {
