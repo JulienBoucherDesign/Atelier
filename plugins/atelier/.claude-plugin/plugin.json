@@ -1,9 +1,18 @@
 {
   "name": "atelier",
+  "version": "5.1.0",
   "description": "See every change Claude Code makes to your site, live on your own computer, before anything is pushed to GitHub. Claude starts the preview itself: nothing to launch.",
-  "author": { "name": "Julien Boucher" },
+  "author": {
+    "name": "Julien Boucher"
+  },
   "homepage": "https://github.com/JulienBoucherDesign/Atelier",
   "repository": "https://github.com/JulienBoucherDesign/Atelier",
   "license": "MIT",
-  "keywords": ["preview", "website", "local", "nextjs", "cloud-session"]
+  "keywords": [
+    "preview",
+    "website",
+    "local",
+    "nextjs",
+    "cloud-session"
+  ]
 }
